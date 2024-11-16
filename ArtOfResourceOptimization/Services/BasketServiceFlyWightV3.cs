@@ -1,22 +1,42 @@
+using System.Text.Json;
 using ArtOfResourceOptimization.Domain;
 using StackExchange.Redis;
 
 namespace ArtOfResourceOptimization.Services;
 
-public class BasketServiceWithoutRedundantDataV2(IConnectionMultiplexer connectionMultiplexer) : BasketService(connectionMultiplexer)
+public class BasketServiceFlyWightV3(IConnectionMultiplexer connectionMultiplexer) : BasketService(connectionMultiplexer)
 {
-    protected override Task SetProductToCache<T>(T mainProduct)
+    protected override async Task SetProductToCache<T>(T mainProduct)
     {
-        return base.SetProductToCache(new Product()
+        var productJson = JsonSerializer.Serialize(new CachedProduct()
         {
-            Id = mainProduct.Id,
-            Barcode = mainProduct.Barcode,
-            StoreName = mainProduct.StoreName,
-            Category = mainProduct.Category,
             Name = mainProduct.Name,
-            StoreId = mainProduct.StoreId,
+            Barcode = mainProduct.Barcode,
+            Category = mainProduct.Category,
+        });
+        
+        var productStoreJson = JsonSerializer.Serialize(new CachedProductStore()
+        {
             Price = mainProduct.Price,
             Quantity = mainProduct.Quantity,
+            StoreName = mainProduct.StoreName,
+            StoreId = mainProduct.StoreId,
         });
+        
+        await connectionMultiplexer.GetDatabase().StringSetAsync($"Product:{mainProduct.Id}",productJson, null, When.NotExists);
+        await connectionMultiplexer.GetDatabase().StringSetAsync($"Product:{mainProduct.Id}:Store:{mainProduct.StoreId}",productStoreJson, null, When.NotExists);
+    }
+
+    protected override async Task<MainProduct?> GetProductFromCache(int productId, int storeId)
+    {
+        var productKey = $"Product:{productId}";
+        var productStoreKey = $"Product:{productId}:Store:{storeId}";
+        var jsons = await connectionMultiplexer.GetDatabase().StringGetAsync([productKey, productStoreKey]);
+        if (jsons.Count(p => p.HasValue) == 2)
+        {
+            return new MainProduct();
+        }
+        
+        return null;
     }
 }

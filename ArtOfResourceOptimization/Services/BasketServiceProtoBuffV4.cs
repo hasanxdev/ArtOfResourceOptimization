@@ -1,30 +1,38 @@
 using System.Text.Json;
 using ArtOfResourceOptimization.Domain;
+using ProtoBuf;
 using StackExchange.Redis;
 
 namespace ArtOfResourceOptimization.Services;
 
-public class BasketServiceFlyWightV3(IConnectionMultiplexer connectionMultiplexer) : BasketService(connectionMultiplexer)
+public class BasketServiceProtoBuffV4(IConnectionMultiplexer connectionMultiplexer) : BasketService(connectionMultiplexer)
 {
     protected override async Task SetProductToCache<T>(T mainProduct)
     {
-        var productJson = JsonSerializer.Serialize(new CachedProduct()
+        using (var ms = new MemoryStream())
         {
-            Name = mainProduct.Name,
-            Barcode = mainProduct.Barcode,
-            Category = mainProduct.Category,
-        });
+            Serializer.Serialize(ms, new CachedProduct()
+            {
+                Name = mainProduct.Name,
+                Barcode = mainProduct.Barcode,
+                Category = mainProduct.Category,
+            });
+            
+            await connectionMultiplexer.GetDatabase().StringSetAsync($"Product:{mainProduct.Id}",ms.ToArray(), null, When.NotExists);
+        }
         
-        var productStoreJson = JsonSerializer.Serialize(new CachedProductStore()
+        using (var ms = new MemoryStream())
         {
-            Price = mainProduct.Price,
-            Quantity = mainProduct.Quantity,
-            StoreName = mainProduct.StoreName,
-            StoreId = mainProduct.StoreId,
-        });
-        
-        await connectionMultiplexer.GetDatabase().StringSetAsync($"Product:{mainProduct.Id}",productJson, null, When.NotExists);
-        await connectionMultiplexer.GetDatabase().StringSetAsync($"Product:{mainProduct.Id}:Store:{mainProduct.StoreId}",productStoreJson, null, When.NotExists);
+            Serializer.Serialize(ms, new CachedProductStore()
+            {
+                Price = mainProduct.Price,
+                Quantity = mainProduct.Quantity,
+                StoreName = mainProduct.StoreName,
+                StoreId = mainProduct.StoreId,
+            });
+            
+            await connectionMultiplexer.GetDatabase().StringSetAsync($"Product:{mainProduct.Id}:Store:{mainProduct.StoreId}", ms.ToArray(), null, When.NotExists);
+        }
     }
 
     protected override async Task<MainProduct?> GetProductFromCache(int productId, int storeId)
@@ -32,22 +40,11 @@ public class BasketServiceFlyWightV3(IConnectionMultiplexer connectionMultiplexe
         var productKey = $"Product:{productId}";
         var productStoreKey = $"Product:{productId}:Store:{storeId}";
         var jsons = await connectionMultiplexer.GetDatabase().StringGetAsync([productKey, productStoreKey]);
-        if (jsons.Length != 2)
+        if (jsons.Count(p => p.HasValue) == 2)
         {
-            return null;
+            return new MainProduct();
         }
         
-        var cashedProduct = JsonSerializer.Deserialize<CachedProduct>(jsons[0]);
-        var cashedProductStore = JsonSerializer.Deserialize<CachedProductStore>(jsons[1]);
-        return new MainProduct()
-        {
-            Barcode = cashedProduct.Barcode,
-            Category = cashedProduct.Category,
-            Name = cashedProduct.Name,
-            StoreName = cashedProductStore.StoreName,
-            StoreId = cashedProductStore.StoreId,
-            Price = cashedProductStore.Price,
-            Quantity = cashedProductStore.Quantity,
-        };
+        return null;
     }
 }
